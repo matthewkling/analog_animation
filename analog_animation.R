@@ -10,9 +10,7 @@ library(colormap)
 
 select <- dplyr::select
 
-raster_recalculate <- F
-if(raster_recalculate){
-      
+prepRasters <- function(agg=8){
       d <- parseMetadata("F:/ClimateNA/1km_Hamman_raw/27_biovars")
       d <- d[!grepl("MAR", d$path),] # this variable doesn't cover mexico, the rest do
       b <- stack(d$path[grepl("6190", d$path)])
@@ -23,8 +21,10 @@ if(raster_recalculate){
       b <- crop(b, ext)
       f <- crop(f, ext)
       
-      b <- aggregate(b, 8)
-      f <- aggregate(f, 8)
+      if(agg>1){
+            b <- aggregate(b, agg)
+            f <- aggregate(f, agg)
+      }
       
       # log transform ppt, and round up logs of <1 mm ppt
       #logtransform <- c(1, 2, 5) # for 7/27 biovars
@@ -40,74 +40,62 @@ if(raster_recalculate){
       b <- mask(b, f)
       f <- mask(f, b)
       
-      saveRDS(list(b, f), "E:/analog_migration/animation/data_b26.rds")
+      d <- list(b, f)
+      saveRDS(d, paste0("E:/analog_migration/animation/data_b26_agg", agg, ".rds"))
+      return(d)
 }
-d <- readRDS("E:/analog_migration/animation/data_b26.rds"); b <- d[[1]]; f <- d[[2]]
 
 
-# prep data
-bv <- as.data.frame(rasterToPoints(b))
-names(bv) <- c("x", "y",  paste0("v", 1:(ncol(bv)-2)))
-fv <- as.data.frame(rasterToPoints(f))
-names(fv) <- c("x", "y",  paste0("v", 1:(ncol(fv)-2)))
-bv$year <- "baseline"
-fv$year <- "future"
-v <- na.omit(rbind(bv, fv))
-v <- v %>% mutate_each(funs(scale), -x, -y, -year)
-vm <- as.matrix(dplyr::select(v, -x, -y, -year))
-
-y <- v %>%
-      gather(variable, value, -year, -x, -y) %>%
-      spread(year, value) %>%
-      mutate(delta=future-baseline)
-
-
-# training samples
-n <- 1000
-# sampled from geographic space
-set.seed(123)
-#train <- vm[sample(nrow(vm), n),]
-# sampled from climate space -- random
-#train <- apply(vm, 2, function(x) c(min(x), runif(n-2, min(x), max(x)), max(x)))
-# sampled from climate space -- uniform
-#train <- apply(vm, 2, function(x) sample(seq(min(x), max(x), c(max(x)-min(x))/(n-1)), n, replace=F))
-# training points are kmeans cluster centers
-set.seed(123)
-train <- vm[sample(nrow(vm), 10000),] # have to reduce size for kmeans to work
-train <- kmeans(train, n)$centers
-
-# TSNE
-#set.seed(123)
-#embedded <- tsne(train, k=3)
-
-#NMDS
-dst <- dist(train)
-set.seed(123)
-fit <- MASS::isoMDS(dst, k=3)
-embedded <- fit$points
-
-# compare distributions of embedded data
-#library(rgl)
-#plot3d(embedded, size=10, col=as.integer(factor(v$year[train])))
-#plot3d(embedded, size=10, col=colors)
-
-method <- c("n1000_kmeans_nmds_ecdf")
-
-######## small multiples plot to choose colors #########
+prepData <- function(clim, ext=NULL){
+      if(!is.null(ext)){
+            ext <- extent(ext)
+            clim <- lapply(clim, crop, y=ext)
+      }
+      clim <- lapply(clim, function(x) as.data.frame(rasterToPoints(x)))
+      clim <- lapply(clim, function(x){
+            names(x) <- c("x", "y",  paste0("v", 1:(ncol(x)-2)))
+            return(x)})
+      b <- clim[[1]]; f <- clim[[2]]
+      b$year <- "baseline"
+      f$year <- "future"
+      v <- na.omit(rbind(b, f))
+      v <- v %>% mutate_each(funs(scale), -x, -y, -year)
+      vm <- as.matrix(dplyr::select(v, -x, -y, -year))
+      
+      y <- v %>%
+            gather(variable, value, -year, -x, -y) %>%
+            spread(year, value) %>%
+            mutate(delta=future-baseline)
+      
+      return(list(vm, y))
+}
 
 
-sm <- function(){
-      steps <- 3
-      i <- 2
+cluster <- function(vm, k=25){
+      set.seed(123)
+      trn <- vm[sample(nrow(vm), 10000),] # have to reduce size for kmeans to work
+      trn <- kmeans(trn, k)$centers
+      return(trn)
+}
+
+embed <- function(trn){
+      dst <- dist(trn)
+      set.seed(123)
+      fit <- MASS::isoMDS(dst, k=3)
+      embedded <- fit$points
+      return(embedded)
+}
+
+sm <- function(y, clusters, embedded, outfile){
       yi <- y %>%
             na.omit() %>%
-            mutate(value = baseline + delta * i/steps) %>%
+            mutate(value = baseline + delta * .5) %>%
             select(x, y, variable, value) %>%
             spread(variable, value)
       yim <- yi %>%
             select(-x, -y) %>%
             as.matrix()
-      nn <- get.knnx(train, yim, k=1)
+      nn <- get.knnx(clusters, yim, k=1)
       for(o in 1:6){
             for(i in 1:8){
                   yj <- yi
@@ -126,57 +114,75 @@ sm <- function(){
             geom_raster(fill=sm$color) +
             ggmap::theme_nothing() +
             coord_fixed(ratio=1)
-      ggsave(paste0("E:/analog_migration/animation/sm_", method, ".png"), p, width=20, height=15, units="in")
+      ggsave(outfile, p, width=20, height=15, units="in")
 }
 
-sm()
-
-stop()
-
-
-######## animation #########
-
-colors <- colors3d(embedded, trans="ecdf", order=2, inversion=2)
-
-steps <- 200
-
-saveGIF({
-      for(i in 0:steps){
-            
-            yi <- yi <- y %>%
-                  na.omit() %>%
-                  mutate(value = baseline + delta * i/steps) %>%
-                  select(x, y, variable, value) %>%
-                  spread(variable, value)
-            
-            yim <- yi %>%
-                  select(-x, -y) %>%
-                  as.matrix()
-            
-            # assign color of NMDS training values to entire dataset based on nearest neighbors
-            nn <- get.knnx(train, yim, k=1)
-            yi$color <- colors[as.vector(nn$nn.index)]
-            
-            # plots
-            p <- ggplot(yi, aes(x, y)) +
-                  geom_raster(fill=yi$color) +
-                  geom_hline(yintercept=min(yi$y), size=8, alpha=.3) +
-                  geom_point(x=min(yi$x) + (max(yi$x)-min(yi$x)) * i/steps,
-                             y=min(yi$y), size=10, shape=15, alpha=.3) +
-                  annotate(geom="text", x=c(min(yi$x), max(yi$x)), y=min(yi$y), label=c("1975", "2080"),
-                           vjust=.4, color="white", size=8) +
-                  ggmap::theme_nothing() +
-                  coord_fixed(ratio=1)
-            print(p)
-            
-      }
+animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1, 
+                    outfile, outdir){
       
-},
-movie.name = paste0("analog_animation_", method, ".gif"),
-interval = .03,
-ani.width = 1500,
-ani.height = 1125,
-outdir = "E:/analog_migration"
-)
+      colors <- colors3d(embedded, trans="ecdf", order=scheme[2], inversion=scheme[1])
+      
+      saveGIF({
+            for(i in 0:steps){
+                  
+                  # interpolate values
+                  yi <- y %>%
+                        na.omit() %>%
+                        mutate(value = baseline + delta * i/steps) %>%
+                        select(x, y, variable, value) %>%
+                        spread(variable, value)
+                  
+                  # assign color of NMDS training values to entire dataset based on nearest neighbors
+                  nn <- get.knnx(clusters, as.matrix(select(yi, -x, -y)), k=1)
+                  yi$color <- colors[as.vector(nn$nn.index)]
+                  
+                  # plots
+                  p <- ggplot(yi, aes(x, y)) +
+                        geom_raster(fill=yi$color) +
+                        geom_hline(yintercept=min(yi$y), size=8, alpha=.3) +
+                        geom_point(x=min(yi$x) + (max(yi$x)-min(yi$x)) * i/steps,
+                                   y=min(yi$y), size=10, shape=15, alpha=.3) +
+                        annotate(geom="text", x=c(min(yi$x), max(yi$x)), y=min(yi$y), label=c("1975", "2080"),
+                                 vjust=.4, color="white", size=8) +
+                        ggmap::theme_nothing() +
+                        coord_fixed(ratio=1)
+                  plot(p)
+                  
+            }
+            
+      },
+      movie.name = basename(outfile),
+      interval = interval,
+      ani.width = 1500,
+      ani.height = 1125,
+      outdir = dirname(outfile)
+      )
+      
+      # move file from temp dir to intended destination, which buggy saveGIF fails at
+      file.rename(paste0(tempdir(), "/", basename(outfile)),
+                  paste0(dirname(outfile), "/", basename(outfile)))
+}
+
+
+###### execute
+
+agg <- 1
+nclust <- 25
+steps <- 100
+interval <- .1
+outfile <- "E:/analog_migration/charts/CA_agg1.gif"
+
+d <- prepRasters(agg)
+d <- readRDS(paste0("E:/analog_migration/animation/data_b26_agg", agg, ".rds"))
+#plot(d[[1]][[1]]); ext=drawExtent()
+
+d <- prepData(d, ext=ext)
+clusters <- cluster(d[[1]])
+embedded <- embed(clusters)
+
+sm(d[[2]], clusters, embedded, paste0("E:/analog_migration/charts/sm_", "test2", ".png"))
+scheme <- c(4,2)
+
+animate(d[[2]], clusters, embedded, scheme, steps=steps, interval=interval, outfile=outfile)
 
 
