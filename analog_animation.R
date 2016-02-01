@@ -11,6 +11,8 @@ library(colormap)
 select <- dplyr::select
 
 prepRasters <- function(agg=8){
+      # function loads, crops, aggregates, log-transforms, and re-saves climateNA raster stacks for two time periods
+      
       d <- parseMetadata("F:/ClimateNA/1km_Hamman_raw/27_biovars")
       d <- d[!grepl("MAR", d$path),] # this variable doesn't cover mexico, the rest do
       b <- stack(d$path[grepl("6190", d$path)])
@@ -29,7 +31,7 @@ prepRasters <- function(agg=8){
       # log transform ppt, and round up logs of <1 mm ppt
       #logtransform <- c(1, 2, 5) # for 7/27 biovars
       logtransform <- c(24, 22, 20, 13, 6, 4, 1) # for 27 biovars
-      notransform <- setdiff(1:27, logtransform)
+      notransform <- setdiff(1:26, logtransform)
       ltrans <- function(x){
             x[x<1] <- 1
             log10(x)
@@ -47,6 +49,8 @@ prepRasters <- function(agg=8){
 
 
 prepData <- function(clim, ext=NULL){
+      # function converts a list of two raster stacks into formatted data frames
+      
       if(!is.null(ext)){
             ext <- extent(ext)
             clim <- lapply(clim, crop, y=ext)
@@ -71,15 +75,17 @@ prepData <- function(clim, ext=NULL){
 }
 
 
-cluster <- function(vm, k=25){
+cluster <- function(data, k=25){
+      # function returns kmeans cluster centers of data matrix
       set.seed(123)
-      trn <- vm[sample(nrow(vm), 10000),] # have to reduce size for kmeans to work
+      trn <- data[sample(nrow(data), 10000),] # have to reduce size for kmeans to work
       trn <- kmeans(trn, k)$centers
       return(trn)
 }
 
-embed <- function(trn){
-      dst <- dist(trn)
+embed <- function(data){
+      # function uses NMDS to embed n-dimensional data into 3-d
+      dst <- dist(data)
       set.seed(123)
       fit <- MASS::isoMDS(dst, k=3)
       embedded <- fit$points
@@ -87,6 +93,7 @@ embed <- function(trn){
 }
 
 sm <- function(y, clusters, embedded, outfile){
+      # function saves a menu of color palettes to show options for RGB mapping
       yi <- y %>%
             na.omit() %>%
             mutate(value = baseline + delta * .5) %>%
@@ -117,8 +124,8 @@ sm <- function(y, clusters, embedded, outfile){
       ggsave(outfile, p, width=20, height=15, units="in")
 }
 
-animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1, 
-                    outfile, outdir){
+animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1, outfile, outdir){
+      # function generates an animation of climate analog migration
       
       colors <- colors3d(embedded, trans="ecdf", order=scheme[2], inversion=scheme[1])
       
@@ -137,11 +144,12 @@ animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1,
                   yi$color <- colors[as.vector(nn$nn.index)]
                   
                   # plots
+                  barlat <- margin <- min(yi$min) - (max(yi$y) - min(yi$y)) /20
                   p <- ggplot(yi, aes(x, y)) +
                         geom_raster(fill=yi$color) +
-                        geom_hline(yintercept=min(yi$y), size=8, alpha=.3) +
+                        geom_hline(yintercept=barlat, size=8, alpha=.3) +
                         geom_point(x=min(yi$x) + (max(yi$x)-min(yi$x)) * i/steps,
-                                   y=min(yi$y), size=10, shape=15, alpha=.3) +
+                                   y=barlat, size=10, shape=15, alpha=.3) +
                         annotate(geom="text", x=c(min(yi$x), max(yi$x)), y=min(yi$y), label=c("1975", "2080"),
                                  vjust=.4, color="white", size=8) +
                         ggmap::theme_nothing() +
@@ -166,21 +174,21 @@ animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1,
 
 ###### execute
 
-agg <- 1
-nclust <- 25
+agg <- 2
+nclust <- 50
 steps <- 100
 interval <- .1
-outfile <- "E:/analog_migration/charts/CA_agg1.gif"
+outfile <- "E:/analog_migration/charts/CA_agg2_n50.gif"
 
-d <- prepRasters(agg)
+#d <- prepRasters(agg)
 d <- readRDS(paste0("E:/analog_migration/animation/data_b26_agg", agg, ".rds"))
-#plot(d[[1]][[1]]); ext=drawExtent()
+plot(d[[1]][[1]]); ext=drawExtent()
 
 d <- prepData(d, ext=ext)
-clusters <- cluster(d[[1]])
+clusters <- cluster(d[[1]], k=nclust)
 embedded <- embed(clusters)
 
-sm(d[[2]], clusters, embedded, paste0("E:/analog_migration/charts/sm_", "test2", ".png"))
+sm(d[[2]], clusters, embedded, paste0("E:/analog_migration/charts/sm_agg", agg,"_clust", nclust, ".png"))
 scheme <- c(4,2)
 
 animate(d[[2]], clusters, embedded, scheme, steps=steps, interval=interval, outfile=outfile)
