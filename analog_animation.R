@@ -138,7 +138,7 @@ animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1, outfi
       
       source("E:/analog_migration/code/saveVid.R")
       
-      saveVid(expr={
+      saveVideo(expr={
             
             # cluster stetup
             cpus <- 7
@@ -187,13 +187,10 @@ animate <- function(y, clusters, embedded, scheme, steps=100, interval=.1, outfi
       tmpdr = tempdir(),
       video.name = paste0(basename(outfile), ".mp4"),
       interval = .05, ani.width=1500, ani.height=938,
-      other.opts = "-pix_fmt yuv420p -b 300k"
+      other.opts = "-pix_fmt yuv420p -b 4000k" # these parameters set the pixel color format and the bitrate
       )
       
       ani.options(oopts)
-      
-      file.copy(paste0(td, "/", basename(outfile), ".mp4"),
-                paste0(outfile, ".mp4"))
 }
 
 
